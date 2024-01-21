@@ -8,12 +8,14 @@
 #include "udisksstorageaccess.h"
 #include "udisks2.h"
 #include "udisks_debug.h"
+#include "udisksutils.h"
 
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDir>
 #include <QDomDocument>
 #include <QGuiApplication>
+#include <QMetaObject>
 #include <QWindow>
 
 #include <config-solid.h>
@@ -29,12 +31,12 @@ StorageAccess::StorageAccess(Device *device)
     , m_teardownInProgress(false)
     , m_passphraseRequested(false)
 {
-    connect(device, SIGNAL(changed()), this, SLOT(checkAccessibility()));
+    connect(device, &Device::changed, this, &StorageAccess::checkAccessibility);
     updateCache();
 
     // Delay connecting to DBus signals to avoid the related time penalty
     // in hot paths such as predicate matching
-    QTimer::singleShot(0, this, SLOT(connectDBusSignals()));
+    QMetaObject::invokeMethod(this, &StorageAccess::connectDBusSignals, Qt::QueuedConnection);
 }
 
 StorageAccess::~StorageAccess()
@@ -61,7 +63,7 @@ bool StorageAccess::isAccessible() const
         if (path.isEmpty() || path == "/") {
             return false;
         }
-        Device holderDevice(path);
+        Device holderDevice(m_device->manager(), path);
         return holderDevice.isMounted();
     }
 
@@ -89,7 +91,7 @@ static QString baseMountPoint(const QByteArray &dev)
             struct libmnt_iter *itr = mnt_new_iter(MNT_ITER_BACKWARD);
             struct libmnt_fs *fs;
 
-            const QByteArray devicePath = dev.endsWith('\x00') ? dev.chopped(1) : dev;
+            const QByteArray devicePath = Utils::sanitizeValue(dev);
 
             while (mnt_table_next_fs(table, itr, &fs) == 0) {
                 if (mnt_fs_get_srcpath(fs) == devicePath //
@@ -119,14 +121,10 @@ QString StorageAccess::filePath() const
         if (path.isEmpty() || path == "/") {
             return QString();
         }
-        Device holderDevice(path);
+        Device holderDevice(m_device->manager(), path);
         const auto mntPoints = qdbus_cast<QByteArrayList>(holderDevice.prop("MountPoints"));
         if (!mntPoints.isEmpty()) {
-            QByteArray first = mntPoints.first();
-            if (first.endsWith('\x00')) {
-                first.chop(1);
-            }
-            return QFile::decodeName(first); // FIXME Solid doesn't support multiple mount points
+            return QFile::decodeName(Utils::sanitizeValue(mntPoints.first())); // FIXME Solid doesn't support multiple mount points
         } else {
             return QString();
         }
@@ -137,11 +135,7 @@ QString StorageAccess::filePath() const
         return {};
     }
 
-    QByteArray first = mntPoints.first();
-    if (first.endsWith('\x00')) {
-        first.chop(1);
-    }
-    const QString potentialMountPoint = QFile::decodeName(first);
+    const QString potentialMountPoint = QFile::decodeName(Utils::sanitizeValue(mntPoints.first()));
 
     if (mntPoints.size() == 1) {
         return potentialMountPoint;
@@ -220,7 +214,6 @@ void StorageAccess::slotDBusReply(const QDBusMessage & /*reply*/)
             mount();
         } else { // Don't broadcast setupDone unless the setup is really done. (Fix kde#271156)
             m_setupInProgress = false;
-            m_device->invalidateCache();
             m_device->broadcastActionDone("setup");
 
             checkAccessibility();
@@ -236,7 +229,7 @@ void StorageAccess::slotDBusReply(const QDBusMessage & /*reply*/)
             // try to "eject" (aka safely remove) from the (parent) drive, e.g. SD card from a reader
             QString drivePath = m_device->drivePath();
             if (!drivePath.isEmpty() || drivePath != "/") {
-                Device drive(drivePath);
+                Device drive(m_device->manager(), drivePath);
                 QDBusConnection c = QDBusConnection::systemBus();
 
                 if (drive.prop("MediaRemovable").toBool() //
@@ -255,7 +248,6 @@ void StorageAccess::slotDBusReply(const QDBusMessage & /*reply*/)
             }
 
             m_teardownInProgress = false;
-            m_device->invalidateCache();
             m_device->broadcastActionDone("teardown");
 
             checkAccessibility();
@@ -379,7 +371,7 @@ QString StorageAccess::clearTextPath() const
             QDomElement nodeElem = nodeList.item(i).toElement();
             if (!nodeElem.isNull() && nodeElem.hasAttribute("name")) {
                 const QString udi = UD2_DBUS_PATH_BLOCKDEVICES + QLatin1Char('/') + nodeElem.attribute("name");
-                Device holderDevice(udi);
+                Device holderDevice(m_device->manager(), udi);
 
                 if (m_device->udi() == holderDevice.prop("CryptoBackingDevice").value<QDBusObjectPath>().path()) {
                     // qDebug() << Q_FUNC_INFO << "CLEARTEXT device path: " << udi;
