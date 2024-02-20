@@ -38,6 +38,10 @@ QString extractCpuVendor(int processorNumber)
     if (vendor.isEmpty()) {
         vendor = info.extractInfoLine("Hardware\\s+:\\s+(\\S.+)");
     }
+    if (vendor.isEmpty()) {
+        // for loongarch, splitting from "-" and taking only the first segment.
+        vendor = info.extractInfoLine("CPU Family\\s+:\\s+(\\S.+)").section('-', 0, 0);
+    }
 #else
     // ARM ? "CPU implementer : 0x41"
     vendor = info.extractCpuInfoLine(processorNumber, "CPU implementer\\s+:\\s+(\\S.+)");
@@ -69,6 +73,11 @@ QString extractCpuModel(int processorNumber)
     if (model.isEmpty()) {
         model = info.extractInfoLine("cpu\\s+:\\s+(\\S.+)");
     }
+
+    // for loongarch, extract from "Model Name:" line.
+    if (model.isEmpty()) {
+        model = info.extractInfoLine("Model Name\\s+:\\s+(\\S.+)");
+    }
 #else
     // ARM? "CPU part        : 0xd03"
     const QString vendor = info.extractCpuInfoLine(processorNumber, "CPU implementer\\s+:\\s+(\\S.+)");
@@ -89,7 +98,15 @@ QString extractCpuModel(int processorNumber)
 int extractCurrentCpuSpeed(int processorNumber)
 {
     CpuInfo info;
-    int speed = info.extractCpuInfoLine(processorNumber, "cpu MHz\\s+:\\s+(\\d+).*").toInt();
+    int speed;
+
+#if defined(__loongarch__)
+    // for loongarch, extract from the "CPU MHz:" line.
+    speed = info.extractCpuInfoLine(processorNumber, "CPU MHz\\s+:\\s+(\\d+).*").toInt();
+#else
+    speed = info.extractCpuInfoLine(processorNumber, "cpu MHz\\s+:\\s+(\\d+).*").toInt();
+#endif
+
     return speed;
 }
 
